@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path"
+	"sync"
 
 	//"path/filepath"
 	"net/http"
@@ -35,15 +36,41 @@ func server(verbosity int, httpServerAddr *string) {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		//	fmt.Fprintf(w, "Hello, %q", html.EscapeString(r.URL.Path))
+		w.Header().Set("Content-Type", "text/html")
+		for k, v := range hosts {
+			fmt.Fprintf(w, "server: <a href=/%s>%s</a> hostIsUp:%t %s<br>\n", k, k, (*v).hostIsUp, (*v).status)
+
+			//html.EscapeString(r.URL.Path))
+		}
+		fmt.Fprintf(w, "<br>\neach host page returns http/500 when down<br>\n")
+
 		_ = html.EscapeString(r.URL.Path)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("500 - server x.x.x.x is down!"))
+		// w.WriteHeader(http.StatusInternalServerError)
+		// w.Write([]byte("500 - server x.x.x.x is down!"))
 	})
+
+	for k, v := range hosts {
+		http.HandleFunc("/"+k, func(w http.ResponseWriter, r *http.Request) {
+			x := http.StatusOK
+			if !(*v).hostIsUp {
+				x = http.StatusInternalServerError
+			}
+			w.WriteHeader(x)
+			fmt.Fprintf(w, "%d - server:%s hostIsUp:%t\n", x, k, (*v).hostIsUp)
+		})
+
+	}
 
 	fmt.Fprintln(os.Stderr, http.ListenAndServe(addr, nil))
 
 }
+
+type PerHost struct {
+	hostIsUp bool
+	status   string
+}
+
+var hosts map[string]*PerHost = make(map[string]*PerHost)
 
 func main() {
 
@@ -57,7 +84,9 @@ func main() {
 	httpServer := flag.Bool("http", false, "enable http server, implies -r")
 	httpServerAddr := flag.String("httpaddr", ":8080", "set http server address:port")
 
-	defaultUclientArgs := "-DgX -u user -w pass -n 400 -c -y"
+	// -z <number> Per-session packet interval in milliseconds (default is 20 ms).
+	// so, n=400, means 500*20 = 10000ms + 3000ms of startup/shutdown ~= 13 seconds
+	defaultUclientArgs := "-DgX -u user -w pass -n 500 -c -y"
 	uclientArgs := flag.String("uclientargs", defaultUclientArgs, "turnutil_uclient args")
 
 	// verbosity
@@ -93,12 +122,54 @@ func main() {
 	}
 
 	for _, host := range flag.Args() {
+		hosts[host] = &PerHost{}
+		hosts[host].hostIsUp = true
+		hosts[host].status = "host not tested yet"
+	}
+
+	var wg sync.WaitGroup
+
+	for _, host := range flag.Args() {
+		wg.Add(1)
 		go func(hhh string) {
+			defer wg.Done()
 			for {
 				tr := performTurnSessionAndPrintStats(*verbosity, hhh, *uclientArgs)
 				if *verbosity >= 1 {
-					fmt.Printf("%+v\n", tr)
+					fmt.Printf("\n%+v\n", tr)
 				}
+
+				rxtxratio := float64(tr.tot_recv_msgs) / float64(tr.tot_send_msgs)
+
+				hosts[hhh].status = fmt.Sprintf("tx:%d rx:%d rx/tx:%f jitter_mean:%f round_trip_delay_mean:%f",
+					tr.tot_send_msgs,
+					tr.tot_recv_msgs,
+					rxtxratio,
+					tr.jitter_mean,
+					tr.round_trip_delay_mean)
+
+				// some ideas from https://getvoip.com/blog/2018/12/20/acceptable-jitter-latency/
+				// also based on east/west us latency
+				// you may want to tune for your situation
+
+				// minimum rs ratio 95%
+				// maximum jitter 25ms
+				// maximum round_trip_delay_mean 25ms
+				// these numbers are somewhat arbitrary
+				// but I am fairly sure if you exceed any you are in trou
+
+				const max_round_trip_delay_mean = 200.0
+				const min_rxtxratio = 0.95
+				const max_jitter_mean = 50.0
+
+				if rxtxratio < min_rxtxratio ||
+					tr.jitter_mean > max_jitter_mean ||
+					tr.round_trip_delay_mean > max_round_trip_delay_mean {
+					hosts[hhh].hostIsUp = false
+				} else {
+					hosts[hhh].hostIsUp = true
+				}
+
 				if !*repeatPtr {
 					break
 				}
@@ -106,10 +177,9 @@ func main() {
 		}(host)
 	}
 
-	for {
-		time.Sleep(time.Hour)
-	}
-
+	fmt.Println("Main: Waiting for workers to finish")
+	wg.Wait()
+	fmt.Println("Main: Completed")
 
 }
 
@@ -162,6 +232,8 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	start := time.Now()
+
 	err := cmd.Run()
 	if err != nil {
 
@@ -179,6 +251,8 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 			chk(err)
 		}
 	}
+
+	tr.elapsed_seconds = int(time.Since(start).Seconds())
 
 	errBytes := stderr.Bytes()
 	outBytes := stdout.Bytes()
@@ -216,33 +290,49 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 
 	re = regexp.MustCompile(`(?m)start_mclient: tot_send_msgs=(\d*), tot_recv_msgs=(\d*)$`)
 	sub = re.FindSubmatch(outBytes)
-	tr.tot_send_msgs, err = strconv.Atoi(string(sub[1]))
-	chk(err)
-	tr.tot_recv_msgs, err = strconv.Atoi(string(sub[2]))
-	chk(err)
+	if len(sub) == 2 {
+		tr.tot_send_msgs, err = strconv.Atoi(string(sub[1]))
+		_ = err
+		//chk(err)
+		tr.tot_recv_msgs, err = strconv.Atoi(string(sub[2]))
+		_ = err
+		//chk(err)
+	}
 
 	// 5: start_mclient: tot_send_bytes ~ 800, tot_recv_bytes ~ 800
 	re = regexp.MustCompile(`(?m)start_mclient: tot_send_bytes ~ (\d*), tot_recv_bytes ~ (\d*)$`)
 	sub = re.FindSubmatch(outBytes)
-	tr.tot_send_bytes, err = strconv.Atoi(string(sub[1]))
-	chk(err)
-	tr.tot_recv_bytes, err = strconv.Atoi(string(sub[2]))
-	chk(err)
+	if len(sub) == 2 {
+		tr.tot_send_bytes, err = strconv.Atoi(string(sub[1]))
+		_ = err
+		//chk(err)
+		tr.tot_recv_bytes, err = strconv.Atoi(string(sub[2]))
+		_ = err
+		//chk(err)
+	}
 
 	re = regexp.MustCompile(`total send dropped (\d*)`)
 	sub = re.FindSubmatch(outBytes)
-	tr.total_send_dropped, err = strconv.Atoi(string(sub[1]))
-	chk(err)
+	if len(sub) == 1 {
+		tr.total_send_dropped, err = strconv.Atoi(string(sub[1]))
+		_ = err
+		//chk(err)
+	}
 
 	// 5: Average round trip delay 15.625000 ms; min = 1 ms, max = 56 ms
 	re = regexp.MustCompile(`Average round trip delay ([+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))) ms; min = (\d*) ms, max = (\d*) ms`)
 	sub = re.FindSubmatch(outBytes)
-	tr.round_trip_delay_mean, err = strconv.ParseFloat(string(sub[1]), 64)
-	chk(err)
-	tr.round_trip_delay_min, err = strconv.Atoi(string(sub[2]))
-	chk(err)
-	tr.round_trip_delay_max, err = strconv.Atoi(string(sub[3]))
-	chk(err)
+	if len(sub) == 3 {
+		tr.round_trip_delay_mean, err = strconv.ParseFloat(string(sub[1]), 64)
+		_ = err
+		//chk(err)
+		tr.round_trip_delay_min, err = strconv.Atoi(string(sub[2]))
+		_ = err
+		//chk(err)
+		tr.round_trip_delay_max, err = strconv.Atoi(string(sub[3]))
+		_ = err
+		//chk(err)
+	}
 
 	// 5: Average jitter 12.500000 ms; min = 1 ms, max = 53 ms
 	re = regexp.MustCompile(`Average jitter ([+-]?(?:(?:\d+\.?\d*)|(?:\.\d+)|(?:nan))) ms; min = (\d*) ms, max = (\d*) ms`)
@@ -250,12 +340,17 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 	if string(sub[1]) == "-nan" || string(sub[1]) == "nan" {
 		sub[1] = []byte("0.0")
 	}
-	tr.jitter_mean, err = strconv.ParseFloat(string(sub[1]), 64)
-	chk(err)
-	tr.jitter_min, err = strconv.Atoi(string(sub[2]))
-	chk(err)
-	tr.jitter_max, err = strconv.Atoi(string(sub[3]))
-	chk(err)
+	if len(sub) == 3 {
+		tr.jitter_mean, err = strconv.ParseFloat(string(sub[1]), 64)
+		_ = err
+		//chk(err)
+		tr.jitter_min, err = strconv.Atoi(string(sub[2]))
+		_ = err
+		//chk(err)
+		tr.jitter_max, err = strconv.Atoi(string(sub[3]))
+		_ = err
+		//chk(err)
+	}
 
 	return tr
 }
@@ -274,8 +369,8 @@ type TurnServerTestRun struct {
 	round_trip_delay_min  int     `db:"round_trip_delay_min"`
 	round_trip_delay_max  int     `db:"round_trip_delay_max"`
 
-	jitter_mean float64 `db:"jitter_mean"`
-	jitter_min  int     `db:"jitter_min"`
-	jitter_max  int     `db:"jitter_max"`
-	runtime_seconds int
+	jitter_mean     float64 `db:"jitter_mean"`
+	jitter_min      int     `db:"jitter_min"`
+	jitter_max      int     `db:"jitter_max"`
+	elapsed_seconds int
 }
