@@ -1,10 +1,11 @@
-// Licensed under MIT license, see LICENSE file.
+// Provided under MIT license, see LICENSE file.
 
 package main
 
 import (
 	"context"
 	"flag"
+	"io"
 	"os"
 	"path"
 	"sync"
@@ -22,17 +23,14 @@ import (
 
 	"fmt"
 	"html"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func server(verbosity int, httpServerAddr *string) {
-	var addr string
-	if httpServerAddr == nil {
-		addr = ":9999"
-	} else {
-		addr = *httpServerAddr
-	}
-	if verbosity >= 1 {
-		fmt.Println("Starting http server at ", addr)
+func server(quiet bool, httpServerAddr string) {
+
+	if !quiet {
+		fmt.Println("Starting http server at ", httpServerAddr)
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +59,16 @@ func server(verbosity int, httpServerAddr *string) {
 
 	}
 
-	fmt.Fprintln(os.Stderr, http.ListenAndServe(addr, nil))
+	// The Handler function provides a default handler to expose metrics
+	// via an HTTP server. "/metrics" is the usual endpoint for that.
+	http.Handle("/metrics", promhttp.Handler())
+	//log.Fatal(http.ListenAndServe(":8080", nil))
+
+	err := http.ListenAndServe(httpServerAddr, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(255)
+	}
 
 }
 
@@ -72,6 +79,20 @@ type PerHost struct {
 
 var hosts map[string]*PerHost = make(map[string]*PerHost)
 
+var (
+	// addr              = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
+	// uniformDomain     = flag.Float64("uniform.domain", 0.0002, "The domain for the uniform distribution.")
+	// normDomain        = flag.Float64("normal.domain", 0.0002, "The domain for the normal distribution.")
+	// normMean          = flag.Float64("normal.mean", 0.00001, "The mean for the normal distribution.")
+	// oscillationPeriod = flag.Duration("oscillation-period", 10*time.Minute, "The duration of the rate oscillation period.")
+
+	repeatPtr      = flag.Bool("f", false, "forever mode, keep repeating uclient against each host")
+	httpServerAddr = flag.String("http", "", "enable http at ip:port, for example try :8080")
+	uclientArgs    = flag.String("a", "", "turnutil_uclient arguments, REQUIRED!")
+	quiet          = flag.Bool("q", false, "quiet mode")
+	sourcename     = flag.String("myname", "","Prometheus: set the source label host name")
+)
+
 func main() {
 
 	//os.Exit(0)
@@ -79,46 +100,59 @@ func main() {
 	// numbPtr := flag.Int("numb", 42, "an int")
 	// boolPtr := flag.Bool("fork", false, "a bool")
 
-	repeatPtr := flag.Bool("r", false, "run forever")
+	//if you use -n 3000 with uclient, you may want to adjust this to 3, for example
+	//timeoutMinutes := flag.Int("timeout", 1, "how many minutes to wait for uclient before timing out")
 
-	httpServer := flag.Bool("http", false, "enable http server, implies -r")
-	httpServerAddr := flag.String("httpaddr", ":8080", "set http server address:port")
+	var timeout int = 5
+	timeoutMinutes := &timeout
 
 	// -z <number> Per-session packet interval in milliseconds (default is 20 ms).
 	// so, n=400, means 500*20 = 10000ms + 3000ms of startup/shutdown ~= 13 seconds
-	defaultUclientArgs := "-DgX -u user -w pass -n 500 -c -y"
-	uclientArgs := flag.String("uclientargs", defaultUclientArgs, "turnutil_uclient args")
+	//
+	//  good starting place
+	//
 
-	// verbosity
-	// 0 totally silent - production recommended
-	// 1 show captured stats each run
-	// 2 show program starts, and timer
-	// 3 super verbose for debugging issues
-	verbosity := flag.Int("v", 1, "set verbosity level")
+	myname := path.Clean(os.Args[0])
+
+	var usagex = `
+mini-tutorial:
+  if you have a working 'turnutils_uclient' command:
+
+  $ turnutils_uclient -DgX -n 500 -c -y -u user -w pass 192.168.2.1
+  
+  That command would become:
+  
+  $ %s -a "-DgX -n 500 -c -y -u user -w pass" 192.168.2.1
+`
+
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] hostnames\n\n", myname)
+		flag.PrintDefaults()
+		fmt.Fprintf(flag.CommandLine.Output(), usagex, myname)
+	}
 
 	flag.Parse()
 
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags] hostnames\n", path.Clean(os.Args[0]))
-		fmt.Fprintf(flag.CommandLine.Output(), "flags:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(flag.CommandLine.Output(), "after flags at least one hostname must be supplied\n")
-	}
-
-	if len(flag.Args()) == 0 {
-		fmt.Fprintf(flag.CommandLine.Output(), "fatal error: no hostnames supplied\n\n")
+	if *uclientArgs == "" {
+		fmt.Fprintf(flag.CommandLine.Output(), "error: missing -a\n\n")
 		flag.Usage()
 		os.Exit(255)
 	}
 
-	if *httpServer {
+	if len(flag.Args()) == 0 {
+		fmt.Fprintf(flag.CommandLine.Output(), "error: missing hostnames\n\n")
+		flag.Usage()
+		os.Exit(255)
+	}
+
+	if *httpServerAddr != "" {
 		if !*repeatPtr {
 			foo := true
 			repeatPtr = &foo
 			fmt.Println("enabling -r for run forever because of -http")
 		}
 
-		go server(*verbosity, httpServerAddr)
+		go server(*quiet, *httpServerAddr)
 	}
 
 	for _, host := range flag.Args() {
@@ -134,10 +168,11 @@ func main() {
 		go func(hhh string) {
 			defer wg.Done()
 			for {
-				tr := performTurnSessionAndPrintStats(*verbosity, hhh, *uclientArgs)
-				if *verbosity >= 1 {
-					fmt.Printf("\n%+v\n", tr)
+				tr := performTurnSessionAndPrintStats(*timeoutMinutes, *quiet, hhh, *uclientArgs)
+				if !*quiet {
+					fmt.Printf("\nCaptured results:\n%+v\n", tr)
 				}
+				updatePrometheus(*sourcename,hhh,tr)
 
 				rxtxratio := float64(tr.tot_recv_msgs) / float64(tr.tot_send_msgs)
 
@@ -162,9 +197,10 @@ func main() {
 				const min_rxtxratio = 0.95
 				const max_jitter_mean = 50.0
 
-				if rxtxratio < min_rxtxratio ||
-					tr.jitter_mean > max_jitter_mean ||
-					tr.round_trip_delay_mean > max_round_trip_delay_mean {
+				if (tr.tot_recv_msgs == 0 || rxtxratio < min_rxtxratio) ||
+					(tr.jitter_mean > max_jitter_mean || tr.jitter_mean == 0.0) ||
+					(tr.round_trip_delay_mean > max_round_trip_delay_mean || tr.round_trip_delay_mean == 0.0) {
+
 					hosts[hhh].hostIsUp = false
 				} else {
 					hosts[hhh].hostIsUp = true
@@ -177,9 +213,16 @@ func main() {
 		}(host)
 	}
 
-	fmt.Println("Main: Waiting for workers to finish")
+	if !*quiet {
+		fmt.Println("Main: Waiting for workers to finish")
+	}
+
 	wg.Wait()
-	fmt.Println("Main: Completed")
+
+	if !*quiet {
+		fmt.Println("Main: Completed")
+	}
+	
 
 }
 
@@ -197,7 +240,7 @@ func chk(err error) {
 
 const turnutils_uclient = "turnutils_uclient"
 
-func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs string) TurnServerTestRun {
+func performTurnSessionAndPrintStats(timeoutMinutes int, quiet bool, host string, uclientArgs string) TurnServerTestRun {
 
 	tr := TurnServerTestRun{}
 	tr.hostname = host
@@ -208,29 +251,31 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 
 	// if turnutils_uclient has an issue we timeout and kill it
 	// in an effort toward robustness
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMinutes)*time.Minute)
 	defer cancel()
 
 	// docs: The provided context is used to kill the process (by calling os.Process.Kill)
 	// if the context becomes done before the command completes on its own.
 	// cam: the go runtime will kill the process when timeout occurs. verified.
-	if verbosity >= 1 {
+	if !quiet {
 		fmt.Println("exec:", turnutils_uclient, strings.Join(argsarr, " "))
 	}
 	cmd := exec.CommandContext(ctx, turnutils_uclient, argsarr...)
 
-	ticker := time.NewTicker(time.Second)
-	go func() {
-		for range ticker.C {
-			if verbosity >= 1 {
-				fmt.Print(".")
-			}
-		}
-	}()
-
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	//cmd.Stdout = &stdout
+	//cmd.Stderr = &stderr
+
+	if quiet {
+		cmd.Stdout = io.MultiWriter(&stdout)
+		cmd.Stderr = io.MultiWriter(&stderr)
+	} else {
+		cmd.Stdout = io.MultiWriter(&stdout, os.Stdout)
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+	}
+
+	//cmd.Stdout=ioutil.Discard
+	//cmd.Stderr=ioutil.Discard
 
 	start := time.Now()
 
@@ -255,27 +300,13 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 	tr.elapsed_seconds = int(time.Since(start).Seconds())
 
 	errBytes := stderr.Bytes()
+	tr.stderr_bytes = len(errBytes)
+
+	// we don't do anything more with captured std error than report the length,
+	// but that's enough for diligent devops people to investigate.
+	// writing captured stderr to stdout or stderr won't necessarily get noticed.
+
 	outBytes := stdout.Bytes()
-
-	errStr := string(errBytes)
-	outStr := string(outBytes)
-	ticker.Stop()
-
-	if verbosity >= 2 {
-		fmt.Println(turnutils_uclient, "stdout:")
-		fmt.Println(outStr)
-		fmt.Println()
-		fmt.Println(turnutils_uclient, "stderr:")
-		fmt.Println(errStr)
-		fmt.Println()
-	}
-
-	if len(errStr) > 0 {
-		fmt.Fprintln(os.Stderr, turnutils_uclient, "error occurred, exiting: ")
-		fmt.Fprintln(os.Stderr, errStr)
-		fmt.Fprintln(os.Stderr)
-		os.Exit(255)
-	}
 
 	// 5: start_mclient: tot_send_msgs=8, tot_recv_msgs=8
 	// 5: start_mclient: tot_send_bytes ~ 800, tot_recv_bytes ~ 800
@@ -290,7 +321,7 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 
 	re = regexp.MustCompile(`(?m)start_mclient: tot_send_msgs=(\d*), tot_recv_msgs=(\d*)$`)
 	sub = re.FindSubmatch(outBytes)
-	if len(sub) == 2 {
+	if len(sub) == 3 {
 		tr.tot_send_msgs, err = strconv.Atoi(string(sub[1]))
 		_ = err
 		//chk(err)
@@ -302,7 +333,7 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 	// 5: start_mclient: tot_send_bytes ~ 800, tot_recv_bytes ~ 800
 	re = regexp.MustCompile(`(?m)start_mclient: tot_send_bytes ~ (\d*), tot_recv_bytes ~ (\d*)$`)
 	sub = re.FindSubmatch(outBytes)
-	if len(sub) == 2 {
+	if len(sub) == 3 {
 		tr.tot_send_bytes, err = strconv.Atoi(string(sub[1]))
 		_ = err
 		//chk(err)
@@ -313,7 +344,7 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 
 	re = regexp.MustCompile(`total send dropped (\d*)`)
 	sub = re.FindSubmatch(outBytes)
-	if len(sub) == 1 {
+	if len(sub) == 2 {
 		tr.total_send_dropped, err = strconv.Atoi(string(sub[1]))
 		_ = err
 		//chk(err)
@@ -322,7 +353,7 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 	// 5: Average round trip delay 15.625000 ms; min = 1 ms, max = 56 ms
 	re = regexp.MustCompile(`Average round trip delay ([+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))) ms; min = (\d*) ms, max = (\d*) ms`)
 	sub = re.FindSubmatch(outBytes)
-	if len(sub) == 3 {
+	if len(sub) == 4 {
 		tr.round_trip_delay_mean, err = strconv.ParseFloat(string(sub[1]), 64)
 		_ = err
 		//chk(err)
@@ -337,10 +368,10 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 	// 5: Average jitter 12.500000 ms; min = 1 ms, max = 53 ms
 	re = regexp.MustCompile(`Average jitter ([+-]?(?:(?:\d+\.?\d*)|(?:\.\d+)|(?:nan))) ms; min = (\d*) ms, max = (\d*) ms`)
 	sub = re.FindSubmatch(outBytes)
-	if string(sub[1]) == "-nan" || string(sub[1]) == "nan" {
-		sub[1] = []byte("0.0")
-	}
-	if len(sub) == 3 {
+	if len(sub) == 4 {
+		if string(sub[1]) == "-nan" || string(sub[1]) == "nan" {
+			sub[1] = []byte("0.0")
+		}
 		tr.jitter_mean, err = strconv.ParseFloat(string(sub[1]), 64)
 		_ = err
 		//chk(err)
@@ -356,21 +387,23 @@ func performTurnSessionAndPrintStats(verbosity int, host string, uclientArgs str
 }
 
 type TurnServerTestRun struct {
-	hostname      string `db:"hostname"`
-	tot_send_msgs int    `db:"tot_send_msgs"`
-	tot_recv_msgs int    `db:"tot_recv_msgs"`
+	hostname      string
+	tot_send_msgs int
+	tot_recv_msgs int
 
-	tot_send_bytes int `db:"tot_send_bytes"`
+	tot_send_bytes int
 
-	tot_recv_bytes     int `db:"tot_recv_bytes"`
-	total_send_dropped int `db:"total_send_dropped"`
+	tot_recv_bytes     int
+	total_send_dropped int
 
-	round_trip_delay_mean float64 `db:"round_trip_delay_mean"`
-	round_trip_delay_min  int     `db:"round_trip_delay_min"`
-	round_trip_delay_max  int     `db:"round_trip_delay_max"`
+	round_trip_delay_mean float64
+	round_trip_delay_min  int
+	round_trip_delay_max  int
 
-	jitter_mean     float64 `db:"jitter_mean"`
-	jitter_min      int     `db:"jitter_min"`
-	jitter_max      int     `db:"jitter_max"`
+	jitter_mean     float64
+	jitter_min      int
+	jitter_max      int
 	elapsed_seconds int
+
+	stderr_bytes int
 }
