@@ -112,7 +112,7 @@ func main() {
 	//  good starting place
 	//
 
-	myname := path.Clean(os.Args[0])
+	myname := path.Base(os.Args[0])
 
 	var usagex = `
 mini-tutorial:
