@@ -2,7 +2,7 @@
 
 # If command starts with an option, prepend with turnserver binary.
 if [ "${1:0:1}" == '-' ]; then
-  set -- turnserver "$@"
+  set -- /app/main "$@"
 fi
 
 exec $(eval "echo $@")
