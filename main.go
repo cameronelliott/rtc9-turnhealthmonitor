@@ -22,41 +22,15 @@ import (
 	"os/exec"
 
 	"fmt"
-	"html"
+	//"html"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func server(quiet bool, httpServerAddr string) {
+func server(verbose bool, httpServerAddr string) {
 
-	if !quiet {
+	if verbose {
 		fmt.Println("Starting http server at ", httpServerAddr)
-	}
-
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		for k, v := range hosts {
-			fmt.Fprintf(w, "server: <a href=/%s>%s</a> hostIsUp:%t %s<br>\n", k, k, (*v).hostIsUp, (*v).status)
-
-			//html.EscapeString(r.URL.Path))
-		}
-		fmt.Fprintf(w, "<br>\neach host page returns http/500 when down<br>\n")
-
-		_ = html.EscapeString(r.URL.Path)
-		// w.WriteHeader(http.StatusInternalServerError)
-		// w.Write([]byte("500 - server x.x.x.x is down!"))
-	})
-
-	for k, v := range hosts {
-		http.HandleFunc("/"+k, func(w http.ResponseWriter, r *http.Request) {
-			x := http.StatusOK
-			if !(*v).hostIsUp {
-				x = http.StatusInternalServerError
-			}
-			w.WriteHeader(x)
-			fmt.Fprintf(w, "%d - server:%s hostIsUp:%t\n", x, k, (*v).hostIsUp)
-		})
-
 	}
 
 	// The Handler function provides a default handler to expose metrics
@@ -72,45 +46,19 @@ func server(quiet bool, httpServerAddr string) {
 
 }
 
-type PerHost struct {
-	hostIsUp bool
-	status   string
-}
-
-var hosts map[string]*PerHost = make(map[string]*PerHost)
-
 var (
-	// addr              = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
-	// uniformDomain     = flag.Float64("uniform.domain", 0.0002, "The domain for the uniform distribution.")
-	// normDomain        = flag.Float64("normal.domain", 0.0002, "The domain for the normal distribution.")
-	// normMean          = flag.Float64("normal.mean", 0.00001, "The mean for the normal distribution.")
-	// oscillationPeriod = flag.Duration("oscillation-period", 10*time.Minute, "The duration of the rate oscillation period.")
-
-	repeatPtr      = flag.Bool("f", false, "forever mode, keep repeating uclient against each host")
-	httpServerAddr = flag.String("http", "", "enable http at ip:port, for example try :8080")
-	uclientArgs    = flag.String("a", "", "turnutil_uclient arguments, REQUIRED!")
-	quiet          = flag.Bool("q", false, "quiet mode")
-	sourcename     = flag.String("myname", "","Prometheus: set the source label host name")
+	uclientArgs = flag.String("a", "", "turnutil_uclient arguments, REQUIRED!")
+	verbose     = flag.Bool("v", false, "verbose mode")
+	sourcename  = flag.String("sourcename", "", "Prometheus label, ie: seattle or chicago")
 )
 
 func main() {
-
-	//os.Exit(0)
-	// wordPtr := flag.String("word", "foo", "a string")
-	// numbPtr := flag.Int("numb", 42, "an int")
-	// boolPtr := flag.Bool("fork", false, "a bool")
 
 	//if you use -n 3000 with uclient, you may want to adjust this to 3, for example
 	//timeoutMinutes := flag.Int("timeout", 1, "how many minutes to wait for uclient before timing out")
 
 	var timeout int = 5
 	timeoutMinutes := &timeout
-
-	// -z <number> Per-session packet interval in milliseconds (default is 20 ms).
-	// so, n=400, means 500*20 = 10000ms + 3000ms of startup/shutdown ~= 13 seconds
-	//
-	//  good starting place
-	//
 
 	myname := path.Base(os.Args[0])
 
@@ -145,22 +93,6 @@ mini-tutorial:
 		os.Exit(255)
 	}
 
-	if *httpServerAddr != "" {
-		if !*repeatPtr {
-			foo := true
-			repeatPtr = &foo
-			fmt.Println("enabling -r for run forever because of -http")
-		}
-
-		go server(*quiet, *httpServerAddr)
-	}
-
-	for _, host := range flag.Args() {
-		hosts[host] = &PerHost{}
-		hosts[host].hostIsUp = true
-		hosts[host].status = "host not tested yet"
-	}
-
 	var wg sync.WaitGroup
 
 	for _, host := range flag.Args() {
@@ -168,61 +100,25 @@ mini-tutorial:
 		go func(hhh string) {
 			defer wg.Done()
 			for {
-				tr := performTurnSessionAndPrintStats(*timeoutMinutes, *quiet, hhh, *uclientArgs)
-				if !*quiet {
+				tr := performTurnSessionAndPrintStats(*timeoutMinutes, *verbose, hhh, *uclientArgs)
+				if *verbose {
 					fmt.Printf("\nCaptured results:\n%+v\n", tr)
 				}
-				updatePrometheus(*sourcename,hhh,tr)
+				updatePrometheus(*sourcename, hhh, tr)
 
-				rxtxratio := float64(tr.tot_recv_msgs) / float64(tr.tot_send_msgs)
-
-				hosts[hhh].status = fmt.Sprintf("tx:%d rx:%d rx/tx:%f jitter_mean:%f round_trip_delay_mean:%f",
-					tr.tot_send_msgs,
-					tr.tot_recv_msgs,
-					rxtxratio,
-					tr.jitter_mean,
-					tr.round_trip_delay_mean)
-
-				// some ideas from https://getvoip.com/blog/2018/12/20/acceptable-jitter-latency/
-				// also based on east/west us latency
-				// you may want to tune for your situation
-
-				// minimum rs ratio 95%
-				// maximum jitter 25ms
-				// maximum round_trip_delay_mean 25ms
-				// these numbers are somewhat arbitrary
-				// but I am fairly sure if you exceed any you are in trou
-
-				const max_round_trip_delay_mean = 200.0
-				const min_rxtxratio = 0.95
-				const max_jitter_mean = 50.0
-
-				if (tr.tot_recv_msgs == 0 || rxtxratio < min_rxtxratio) ||
-					(tr.jitter_mean > max_jitter_mean || tr.jitter_mean == 0.0) ||
-					(tr.round_trip_delay_mean > max_round_trip_delay_mean || tr.round_trip_delay_mean == 0.0) {
-
-					hosts[hhh].hostIsUp = false
-				} else {
-					hosts[hhh].hostIsUp = true
-				}
-
-				if !*repeatPtr {
-					break
-				}
 			}
 		}(host)
 	}
 
-	if !*quiet {
+	if *verbose {
 		fmt.Println("Main: Waiting for workers to finish")
 	}
 
 	wg.Wait()
 
-	if !*quiet {
+	if *verbose {
 		fmt.Println("Main: Completed")
 	}
-	
 
 }
 
@@ -240,7 +136,7 @@ func chk(err error) {
 
 const turnutils_uclient = "turnutils_uclient"
 
-func performTurnSessionAndPrintStats(timeoutMinutes int, quiet bool, host string, uclientArgs string) TurnServerTestRun {
+func performTurnSessionAndPrintStats(timeoutMinutes int, verbose bool, host string, uclientArgs string) TurnServerTestRun {
 
 	tr := TurnServerTestRun{}
 	tr.hostname = host
@@ -257,7 +153,7 @@ func performTurnSessionAndPrintStats(timeoutMinutes int, quiet bool, host string
 	// docs: The provided context is used to kill the process (by calling os.Process.Kill)
 	// if the context becomes done before the command completes on its own.
 	// cam: the go runtime will kill the process when timeout occurs. verified.
-	if !quiet {
+	if verbose {
 		fmt.Println("exec:", turnutils_uclient, strings.Join(argsarr, " "))
 	}
 	cmd := exec.CommandContext(ctx, turnutils_uclient, argsarr...)
@@ -266,7 +162,7 @@ func performTurnSessionAndPrintStats(timeoutMinutes int, quiet bool, host string
 	//cmd.Stdout = &stdout
 	//cmd.Stderr = &stderr
 
-	if quiet {
+	if !verbose {
 		cmd.Stdout = io.MultiWriter(&stdout)
 		cmd.Stderr = io.MultiWriter(&stderr)
 	} else {
