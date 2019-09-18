@@ -47,9 +47,9 @@ func server(verbose bool, httpServerAddr string) {
 }
 
 var (
-	uclientArgs = flag.String("a", "", "turnutil_uclient arguments, REQUIRED!")
+	uclientArgs = flag.String("a", "", "REQUIRED: turnutil_uclient arguments")
 	verbose     = flag.Bool("v", false, "verbose mode")
-	sourcename  = flag.String("sourcename", "", "Prometheus label, ie: seattle or chicago")
+	sourcename  = flag.String("sourcename", "", "REQUIRED: Prometheus label, ie: seattle or chicago")
 )
 
 func main() {
@@ -83,6 +83,12 @@ mini-tutorial:
 
 	if *uclientArgs == "" {
 		fmt.Fprintf(flag.CommandLine.Output(), "error: missing -a\n\n")
+		flag.Usage()
+		os.Exit(255)
+	}
+
+	if *sourcename == "" {
+		fmt.Fprintf(flag.CommandLine.Output(), "error: missing -sourcename\n\n")
 		flag.Usage()
 		os.Exit(255)
 	}
