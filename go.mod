@@ -1,4 +1,4 @@
-module github.com/limertc/turnmonitorx
+module github.com/LimeRTC/turnmonitorx
 
 go 1.13
 
