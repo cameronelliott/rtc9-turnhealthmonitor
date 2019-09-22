@@ -46,10 +46,13 @@ func server(verbose bool, httpServerAddr string) {
 
 }
 
+const turnutils_uclient = "turnutils_uclient"
+
 var (
 	uclientArgs = flag.String("a", "", "REQUIRED: turnutil_uclient arguments")
 	verbose     = flag.Bool("v", false, "verbose mode")
 	sourcename  = flag.String("sourcename", "", "REQUIRED: Prometheus label, ie: seattle or chicago")
+	httpaddr    = flag.String("http", ":9090", "change http server bind addr:port")
 )
 
 func main() {
@@ -63,14 +66,14 @@ func main() {
 	myname := path.Base(os.Args[0])
 
 	var usagex = `
-mini-tutorial:
+example usage:
   if you have a working 'turnutils_uclient' command:
 
   $ turnutils_uclient -DgX -n 500 -c -y -u user -w pass 192.168.2.1
   
   That command would become:
   
-  $ %s -a "-DgX -n 500 -c -y -u user -w pass" 192.168.2.1
+  $ %s -sourcename seattle -a "-DgX -n 500 -c -y -u user -w pass" 192.168.2.1
 `
 
 	flag.Usage = func() {
@@ -94,10 +97,14 @@ mini-tutorial:
 	}
 
 	if len(flag.Args()) == 0 {
-		fmt.Fprintf(flag.CommandLine.Output(), "error: missing hostnames\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "error: missing target hostnames\n\n")
 		flag.Usage()
 		os.Exit(255)
 	}
+
+	// flags done
+
+	go server(*verbose, *httpaddr)
 
 	var wg sync.WaitGroup
 
@@ -133,14 +140,6 @@ func chk(err error) {
 		panic(err)
 	}
 }
-
-// func printOutput(outs []byte) {
-// 	if len(outs) > 0 {
-// 		fmt.Printf("==> Output: %s\n", string(outs))
-// 	}
-// }
-
-const turnutils_uclient = "turnutils_uclient"
 
 func performTurnSessionAndPrintStats(timeoutMinutes int, verbose bool, host string, uclientArgs string) TurnServerTestRun {
 
