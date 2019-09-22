@@ -51,7 +51,7 @@ const turnutils_uclient = "turnutils_uclient"
 var (
 	uclientArgs = flag.String("a", "", "REQUIRED: turnutil_uclient arguments")
 	verbose     = flag.Bool("v", false, "verbose mode")
-	sourcename  = flag.String("sourcename", "", "REQUIRED: Prometheus label, ie: seattle or chicago")
+
 	httpaddr    = flag.String("http", ":9090", "change http server bind addr:port")
 )
 
@@ -73,7 +73,7 @@ example usage:
   
   That command would become:
   
-  $ %s -sourcename seattle -a "-DgX -n 500 -c -y -u user -w pass" 192.168.2.1
+  $ %s -a "-DgX -n 500 -c -y -u user -w pass" 192.168.2.1
 `
 
 	flag.Usage = func() {
@@ -90,11 +90,7 @@ example usage:
 		os.Exit(255)
 	}
 
-	if *sourcename == "" {
-		fmt.Fprintf(flag.CommandLine.Output(), "error: missing -sourcename\n\n")
-		flag.Usage()
-		os.Exit(255)
-	}
+
 
 	if len(flag.Args()) == 0 {
 		fmt.Fprintf(flag.CommandLine.Output(), "error: missing target hostnames\n\n")
@@ -117,7 +113,7 @@ example usage:
 				if *verbose {
 					fmt.Printf("\nCaptured results:\n%+v\n", tr)
 				}
-				updatePrometheus(*sourcename, hhh, tr)
+				updatePrometheus( hhh, tr)
 
 			}
 		}(host)

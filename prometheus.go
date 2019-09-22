@@ -38,7 +38,6 @@ var (
 			Help: "Number of packets lost.",
 		},
 		[]string{"sourcename", "dest"})
-
 )
 
 func init() {
@@ -47,19 +46,18 @@ func init() {
 	prometheus.MustRegister(tot_recv_msgs)
 	prometheus.MustRegister(tot_lost_msgs)
 
-
 }
 
-func updatePrometheus(sourcename string, dest string, tr TurnServerTestRun) {
+func updatePrometheus(dest string, tr TurnServerTestRun) {
 	//cpuTemp.Set(65.3)
 	//	hdFailures.With(prometheus.Labels{"device":"/dev/sda"}).Inc()
 
-	tot_send_msgs.With(prometheus.Labels{"sourcename": sourcename, "dest": dest}).Add(float64(tr.tot_send_msgs))
+	tot_send_msgs.With(prometheus.Labels{"dest": dest}).Add(float64(tr.tot_send_msgs))
 
-	tot_recv_msgs.With(prometheus.Labels{"sourcename": sourcename, "dest": dest}).Add(float64(tr.tot_recv_msgs))
+	tot_recv_msgs.With(prometheus.Labels{"dest": dest}).Add(float64(tr.tot_recv_msgs))
 
-	tot_lost_msgs.With(prometheus.Labels{"sourcename": sourcename, "dest": dest}).Add(float64(tr.tot_send_msgs - tr.tot_recv_msgs))
+	tot_lost_msgs.With(prometheus.Labels{"dest": dest}).Add(float64(tr.tot_send_msgs - tr.tot_recv_msgs))
 
-	//loss_percent.Collect()(prometheus.Labels{"sourcename": sourcename, "dest": dest}).Set(float64(tr.tot_send_msgs - tr.tot_recv_msgs)/float64(tr.tot_send_msgs))
+	//loss_percent.Collect()(prometheus.Labels{ "dest": dest}).Set(float64(tr.tot_send_msgs - tr.tot_recv_msgs)/float64(tr.tot_send_msgs))
 
 }
