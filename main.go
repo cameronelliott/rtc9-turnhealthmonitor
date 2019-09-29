@@ -161,7 +161,7 @@ func performTurnSessionAndPrintStats(timeoutMinutes int, verbose bool, host stri
 
 	if len(secretKey) > 0 {
 		uname, pass, _ := GetTURNCredentials(name, secretKey, 3600)
-		// 1569885413:user -w D7TT8Y5y9BJYptvZhyyoS0Ph0i,s=
+
 		uclientArgs = uclientArgs + " -u " + uname + " -w " + pass
 	}
 
