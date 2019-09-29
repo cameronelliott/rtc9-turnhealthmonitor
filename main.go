@@ -4,6 +4,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"flag"
 	"io"
 	"os"
@@ -52,7 +55,9 @@ var (
 	uclientArgs = flag.String("a", "", "REQUIRED: turnutil_uclient arguments")
 	verbose     = flag.Bool("v", false, "verbose mode")
 
-	httpaddr    = flag.String("http", ":9090", "change http server bind addr:port")
+	httpaddr  = flag.String("http", ":9090", "change http server bind addr:port")
+	secretKey = flag.String("secretKey", "", "append emphemeral credentials using -u -w and secret key")
+	username = flag.String("username", "", "emphemeral credentials username")
 )
 
 func main() {
@@ -90,8 +95,6 @@ example usage:
 		os.Exit(255)
 	}
 
-
-
 	if len(flag.Args()) == 0 {
 		fmt.Fprintf(flag.CommandLine.Output(), "error: missing target hostnames\n\n")
 		flag.Usage()
@@ -109,11 +112,11 @@ example usage:
 		go func(hhh string) {
 			defer wg.Done()
 			for {
-				tr := performTurnSessionAndPrintStats(*timeoutMinutes, *verbose, hhh, *uclientArgs)
+				tr := performTurnSessionAndPrintStats(*timeoutMinutes, *verbose, hhh, *uclientArgs, *secretKey, *username)
 				if *verbose {
 					fmt.Printf("\nCaptured results:\n%+v\n", tr)
 				}
-				updatePrometheus( hhh, tr)
+				updatePrometheus(hhh, tr)
 
 			}
 		}(host)
@@ -137,10 +140,30 @@ func chk(err error) {
 	}
 }
 
-func performTurnSessionAndPrintStats(timeoutMinutes int, verbose bool, host string, uclientArgs string) TurnServerTestRun {
+func GetTURNCredentials(name string, secret string, seconds int64) (string, string, time.Time) {
+
+	unixTimeStamp := time.Now().Unix() + seconds
+	username := strconv.FormatInt(unixTimeStamp, 10) + ":" + name
+
+	key := []byte(secret)
+	h := hmac.New(sha1.New, key)
+	h.Write([]byte(username))
+	password := base64.StdEncoding.EncodeToString(h.Sum(nil))
+	expiry := time.Unix(unixTimeStamp, 0)
+
+	return username, password, expiry
+}
+
+func performTurnSessionAndPrintStats(timeoutMinutes int, verbose bool, host string, uclientArgs string, secretKey string, name string) TurnServerTestRun {
 
 	tr := TurnServerTestRun{}
 	tr.hostname = host
+
+	if len(secretKey) > 0 {
+		uname, pass, _ := GetTURNCredentials(name, secretKey, 3600)
+		// 1569885413:user -w D7TT8Y5y9BJYptvZhyyoS0Ph0i,s=
+		uclientArgs = uclientArgs + " -u " + uname + " -w " + pass
+	}
 
 	uclientArgs = uclientArgs + " " + host
 
