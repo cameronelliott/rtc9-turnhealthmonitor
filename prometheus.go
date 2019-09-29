@@ -23,21 +23,21 @@ var (
 			Name: "turnmonitorx_tot_send_msgs",
 			Help: "Number of messages sent",
 		},
-		[]string{"sourcename", "dest"})
+		[]string{"dest"})
 
 	tot_recv_msgs = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "turnmonitorx_tot_recv_msgs",
 			Help: "Number of packets received.",
 		},
-		[]string{"sourcename", "dest"})
+		[]string{"dest"})
 
 	tot_lost_msgs = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "turnmonitorx_tot_lost_msgs",
 			Help: "Number of packets lost.",
 		},
-		[]string{"sourcename", "dest"})
+		[]string{"dest"})
 )
 
 func init() {
