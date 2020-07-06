@@ -1,3 +1,2 @@
-# turnmonitorx
-A gateway for monitoring of Turn and Stun servers,
- Http polling or Statsd pushing of status
+# limeturnmonitor
+Program for running turn sessions via turnutils_uclient and creating a /metrics Prometheus HTTP endpoint.
